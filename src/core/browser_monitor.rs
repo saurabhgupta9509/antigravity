@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uiautomation::{UIAutomation, UIElement, UITreeWalker};
 use uiautomation::types::UIProperty;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SendMessageW, WM_CLOSE};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SendMessageW, PostMessageW, WM_CLOSE};
 use windows::Win32::Foundation::{LPARAM, WPARAM, HWND};
 
 pub struct BrowserMonitor {
@@ -78,7 +78,7 @@ impl BrowserMonitor {
     }
 
     fn find_address_bar_recursive(&self, automation: &UIAutomation, walker: &UITreeWalker, element: &UIElement, depth: u32) -> Option<UIElement> {
-        if depth > 10 { return None; }
+        if depth > 12 { return None; }
 
         let mut current = match walker.get_first_child(element) {
             Ok(el) => el,
@@ -87,11 +87,20 @@ impl BrowserMonitor {
         
         loop {
             if let Ok(name) = current.get_name() {
-                if name == "Address and search bar" || name == "Address bar" || name.contains("Address and search bar") {
+                let name_lower = name.to_lowercase();
+                // Check common names
+                if name_lower.contains("address and search bar") || name_lower.contains("address bar") {
                     return Some(current.clone());
                 }
             }
             
+            // Check for common AutomationIds as a robust fallback
+            if let Ok(auto_id) = current.get_automation_id() {
+                if auto_id == "addressEditBox" || auto_id.contains("url") || auto_id.contains("address") {
+                    return Some(current.clone());
+                }
+            }
+
             if let Some(found) = self.find_address_bar_recursive(automation, walker, &current, depth + 1) {
                 return Some(found);
             }
@@ -109,6 +118,65 @@ impl BrowserMonitor {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
 
         if let Some(url) = current_url {
+            // Active blocking: Check on every iteration if we have a URL
+            if self.is_blocked(&url) {
+                static mut LAST_ALERT_TIME: f64 = 0.0;
+                let current_time = now;
+                
+                // Only log the alert every 2 seconds to avoid spamming the console
+                unsafe {
+                    if current_time - LAST_ALERT_TIME > 2.0 {
+                        println!("[ALERT] Accessing blocked URL: {}. Closing window...", url);
+                        LAST_ALERT_TIME = current_time;
+                    }
+                }
+                
+                self.blocked_count += 1;
+                
+                // Actively block using uiautomation if possible
+                if let Some(automation) = UIAutomation::new().ok() {
+                    if let Some(root) = automation.get_root_element().ok() {
+                        if let Some(walker) = automation.get_control_view_walker().ok() {
+                            let mut handle_found = false;
+                            
+                            if let Some(browser_el) = self.find_browser_window_with_url(&automation, &walker, &root, &url) {
+                                if let Ok(val) = browser_el.get_property_value(UIProperty::NativeWindowHandle) {
+                                    let mut handle_str = val.to_string();
+                                    println!("[DEBUG] Raw HWND property: {}", handle_str);
+                                    
+                                    if let Some(start) = handle_str.find('(') {
+                                        if let Some(end) = handle_str.rfind(')') {
+                                            handle_str = handle_str[start+1..end].to_string();
+                                        }
+                                    }
+                                    
+                                    if let Ok(hwnd_val) = handle_str.parse::<isize>() {
+                                        if hwnd_val != 0 {
+                                            println!("[INFO] Found browser window HWND: {}. Sending close message...", hwnd_val);
+                                            unsafe {
+                                                PostMessageW(HWND(hwnd_val), WM_CLOSE, WPARAM(0), LPARAM(0));
+                                            }
+                                            handle_found = true;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if !handle_found {
+                                // Fallback to foreground window
+                                unsafe {
+                                    let hwnd = GetForegroundWindow();
+                                    if hwnd.0 != 0 {
+                                        println!("[INFO] Falling back to closing foreground window (HWND: {:?})", hwnd);
+                                        PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if url != self.last_url {
                 if !self.last_url.is_empty() {
                     let start_time = self.url_timers.remove(&self.last_url).unwrap_or(now);
@@ -116,41 +184,6 @@ impl BrowserMonitor {
                     *self.total_times.entry(self.last_url.clone()).or_insert(0.0) += duration;
                 }
                 
-                // Check if new URL is blocked
-                if self.is_blocked(&url) {
-                    println!("[ALERT] Accessing blocked URL: {}. Closing window...", url);
-                    self.blocked_count += 1;
-                    
-                    // Actively block using uiautomation if possible
-                    if let Some(automation) = UIAutomation::new().ok() {
-                        if let Some(root) = automation.get_root_element().ok() {
-                            if let Some(walker) = automation.get_control_view_walker().ok() {
-                                if let Some(browser_el) = self.find_browser_window_with_url(&automation, &walker, &root, &url) {
-                                    println!("[INFO] Found browser window via UI Automation. Closing...");
-                                    // Try to send WM_CLOSE to the specific window handle from element
-                                    if let Ok(val) = browser_el.get_property_value(UIProperty::NativeWindowHandle) {
-                                        // Try to parse handle from string as a more portable way
-                                        let hwnd_val = val.to_string().parse::<isize>().unwrap_or(0);
-                                        if hwnd_val != 0 {
-                                            unsafe {
-                                                SendMessageW(HWND(hwnd_val), WM_CLOSE, WPARAM(0), LPARAM(0));
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Fallback to foreground window
-                                    unsafe {
-                                        let hwnd = GetForegroundWindow();
-                                        if hwnd.0 != 0 {
-                                            SendMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
                 self.last_url = url.clone();
                 self.url_timers.insert(url.clone(), now);
                 
@@ -181,7 +214,27 @@ impl BrowserMonitor {
 
     fn is_blocked(&self, url: &str) -> bool {
         let url_lower = url.to_lowercase();
+        
+        // Prevent matching extremely short "URLs" that are usually just user typing
+        if url_lower.len() < 4 {
+            return false;
+        }
+
+        // Normalize URL for matching
+        let mut normalized_url = url_lower.as_str();
+        if normalized_url.starts_with("http://") { normalized_url = &normalized_url[7..]; }
+        if normalized_url.starts_with("https://") { normalized_url = &normalized_url[8..]; }
+        if normalized_url.starts_with("www.") { normalized_url = &normalized_url[4..]; }
+        let normalized_url = normalized_url.trim_end_matches('/');
+
         self.api_blacklist.iter().any(|pattern| {
+            // Normalize pattern as well
+            let mut normalized_pattern = pattern.as_str();
+            if normalized_pattern.starts_with("http://") { normalized_pattern = &normalized_pattern[7..]; }
+            if normalized_pattern.starts_with("https://") { normalized_pattern = &normalized_pattern[8..]; }
+            if normalized_pattern.starts_with("www.") { normalized_pattern = &normalized_pattern[4..]; }
+            let normalized_pattern = normalized_pattern.trim_end_matches('/');
+
             let match_found = if pattern.contains('*') {
                 let regex_pattern = pattern.replace(".", "\\.").replace("*", ".*");
                 if let Ok(re) = regex::Regex::new(&format!("(?i)^{}$", regex_pattern)) {
@@ -190,11 +243,14 @@ impl BrowserMonitor {
                     false
                 }
             } else {
-                url_lower.contains(pattern)
+                // Check if normalized URL contains normalized pattern (Domain Match)
+                // e.g., "facebook.com/login" contains "facebook.com"
+                normalized_url.contains(normalized_pattern)
             };
 
             if match_found {
-                println!("[DEBUG] URL match found! Pattern: '{}' matches URL: '{}'", pattern, url);
+                println!("[DEBUG] URL match found! Pattern: '{}' matches URL: '{}' (Normalized: '{}' vs '{}')", 
+                    pattern, url, normalized_pattern, normalized_url);
             }
             match_found
         })

@@ -227,12 +227,22 @@ impl APIClient {
                     return None;
                 }
                 
-                match resp.json::<ApiResponse<serde_json::Value>>().await {
+                let body = match resp.text().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        println!("[ERROR] Failed to read response body: {}", e);
+                        return None;
+                    }
+                };
+
+                println!("[DEBUG] Raw partial access response: {}", body);
+
+                match serde_json::from_str::<ApiResponse<serde_json::Value>>(&body) {
                     Ok(api_resp) => {
                         if api_resp.success {
                             return Some(api_resp.data);
                         } else {
-                            println!("[ERROR] API returned success=false for partial access config");
+                            println!("[ERROR] API returned success=false for partial access config: {}", api_resp.message);
                         }
                     }
                     Err(e) => {
@@ -260,12 +270,22 @@ impl APIClient {
                     return Vec::new();
                 }
                 
-                match resp.json::<ApiResponse<Vec<String>>>().await {
+                let body = match resp.text().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        println!("[ERROR] Failed to read response body: {}", e);
+                        return Vec::new();
+                    }
+                };
+
+                println!("[DEBUG] Raw blocked URLs response: {}", body);
+
+                match serde_json::from_str::<ApiResponse<Vec<String>>>(&body) {
                     Ok(api_resp) => {
                         if api_resp.success {
                             return api_resp.data;
                         } else {
-                            println!("[ERROR] API returned success=false for blocked URLs");
+                            println!("[ERROR] API returned success=false for blocked URLs: {}", api_resp.message);
                         }
                     }
                     Err(e) => {

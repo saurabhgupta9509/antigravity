@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-pub const CHECK_INTERVAL: u64 = 3;
+pub const CHECK_INTERVAL: u64 = 1;
 pub const TRACK_APP_USAGE: bool = true;
 pub const MINIMUM_APP_TIME: u64 = 5;
 
