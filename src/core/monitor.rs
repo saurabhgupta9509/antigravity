@@ -89,8 +89,8 @@ impl CybersecurityMonitor {
             }
             let _ = std::io::stdout().flush();
 
-            // Periodic configuration update (every 5 minutes)
-            if last_config_update.elapsed() >= Duration::from_secs(60) {
+            // Periodic configuration update (every 30 seconds)
+            if last_config_update.elapsed() >= Duration::from_secs(30) {
                 println!("[{}] Checking for configuration updates...", Local::now().format("%H:%M:%S"));
                 
                 // Update Partial Access Config
