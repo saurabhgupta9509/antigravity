@@ -221,31 +221,63 @@ impl APIClient {
 
         match self.client.get(url).send().await {
             Ok(resp) => {
-                if let Ok(api_resp) = resp.json::<ApiResponse<serde_json::Value>>().await {
-                    if api_resp.success {
-                        return Some(api_resp.data);
+                let status = resp.status();
+                if !status.is_success() {
+                    println!("[ERROR] Failed to fetch partial access config: status {}", status);
+                    return None;
+                }
+                
+                match resp.json::<ApiResponse<serde_json::Value>>().await {
+                    Ok(api_resp) => {
+                        if api_resp.success {
+                            return Some(api_resp.data);
+                        } else {
+                            println!("[ERROR] API returned success=false for partial access config");
+                        }
+                    }
+                    Err(e) => {
+                        println!("[ERROR] Failed to parse partial access config JSON: {}", e);
                     }
                 }
                 None
             }
-            Err(_) => None,
+            Err(e) => {
+                println!("[ERROR] Network error fetching partial access config: {}", e);
+                None
+            }
         }
     }
 
     pub async fn get_blocked_urls(&self) -> Vec<String> {
         let endpoints = get_api_endpoints();
-        let url = endpoints.get("blocked_urls").unwrap(); // Use unwrap() as per existing pattern
+        let url = endpoints.get("blocked_urls").unwrap();
 
         match self.client.get(url).send().await {
             Ok(resp) => {
-                if let Ok(api_resp) = resp.json::<ApiResponse<Vec<String>>>().await {
-                    if api_resp.success {
-                        return api_resp.data;
+                let status = resp.status();
+                if !status.is_success() {
+                    println!("[ERROR] Failed to fetch blocked URLs: status {}", status);
+                    return Vec::new();
+                }
+                
+                match resp.json::<ApiResponse<Vec<String>>>().await {
+                    Ok(api_resp) => {
+                        if api_resp.success {
+                            return api_resp.data;
+                        } else {
+                            println!("[ERROR] API returned success=false for blocked URLs");
+                        }
+                    }
+                    Err(e) => {
+                        println!("[ERROR] Failed to parse blocked URLs JSON: {}", e);
                     }
                 }
                 Vec::new()
             }
-            Err(_) => Vec::new(),
+            Err(e) => {
+                println!("[ERROR] Network error fetching blocked URLs: {}", e);
+                Vec::new()
+            }
         }
     }
 

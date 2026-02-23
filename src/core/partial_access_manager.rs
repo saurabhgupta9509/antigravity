@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetClassNameW, GetWindowTextW, SendMessageW, WM_CLOSE};
-use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::Foundation::{LPARAM, WPARAM, HWND};
 use serde::Deserialize;
 
 pub struct PartialAccessManager {
@@ -78,6 +78,9 @@ impl PartialAccessManager {
                 .build()
                 .unwrap();
 
+            let mut last_blocked_hwnd: Option<HWND> = None;
+            let mut last_blocked_time = Instant::now();
+
             loop {
                 let current_config = {
                     let c = config.lock().unwrap();
@@ -100,6 +103,12 @@ impl PartialAccessManager {
                             let h = GetForegroundWindow();
                             if h.0 != 0 { Some(h) } else { None }
                         } {
+                            // Avoid repetitive blocking/logging for the same window within a short period
+                            if Some(hwnd) == last_blocked_hwnd && last_blocked_time.elapsed() < Duration::from_secs(2) {
+                                std::thread::sleep(Duration::from_millis(200));
+                                continue;
+                            }
+
                             let mut class_name = [0u16; 256];
                             let mut title = [0u16; 256];
                             
@@ -117,8 +126,16 @@ impl PartialAccessManager {
                             
                             let dialog_type = get_dialog_type(&class_name_str, &title_str, site);
                             if dialog_type != DialogType::None {
-                                println!("Blocking partial-access dialog: {} ({}) for site: {}", title_str, class_name_str, site.url_pattern);
-                                unsafe { SendMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)) };
+                                println!("[INFO] Blocking partial-access dialog: {} ({}) for site: {}", 
+                                    title_str, class_name_str, site.url_pattern);
+                                
+                                // Use PostMessageW to be non-blocking and more likely to succeed for dialogs
+                                unsafe { 
+                                    windows::Win32::UI::WindowsAndMessaging::PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)) 
+                                };
+                                
+                                last_blocked_hwnd = Some(hwnd);
+                                last_blocked_time = Instant::now();
                                 
                                 let mut s = stats.lock().unwrap();
                                 s.dialogs_closed += 1;
@@ -150,8 +167,10 @@ impl PartialAccessManager {
         if let Some(new_config_val) = api_client.get_partial_access_config().await {
             let mut config = self.config.lock().unwrap();
             
-            if let Some(enabled) = new_config_val.get("success").and_then(|v| v.as_bool()).or(Some(true)) {
-               // config.enabled = enabled; // success field of API response, not necessarily 'enabled'
+            // The backend might send 'enabled' or 'success'
+            if let Some(enabled) = new_config_val.get("enabled").and_then(|v| v.as_bool())
+                .or_else(|| new_config_val.get("active").and_then(|v| v.as_bool())) {
+                config.enabled = enabled;
             }
 
             if let Some(sites_array) = new_config_val.get("partialAccessSites").and_then(|v| v.as_array()) {
@@ -159,7 +178,15 @@ impl PartialAccessManager {
                     .filter_map(|s| serde_json::from_value(s.clone()).ok())
                     .collect();
                 
-                println!("Updated partial access config: {} active sites", sites.len());
+                println!("Updated partial access config: {} sites received", sites.len());
+                config.sites = sites;
+            } else if let Some(sites_array) = new_config_val.get("sites").and_then(|v| v.as_array()) {
+                // Try alternate key 'sites'
+                let sites: Vec<PartialAccessSite> = sites_array.iter()
+                    .filter_map(|s| serde_json::from_value(s.clone()).ok())
+                    .collect();
+                
+                println!("Updated partial access config: {} sites received (via 'sites' key)", sites.len());
                 config.sites = sites;
             }
         }

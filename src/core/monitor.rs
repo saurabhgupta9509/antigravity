@@ -80,28 +80,29 @@ impl CybersecurityMonitor {
             } else {
                 self.browser_monitor.update_timing(None);
                 
-                // Clear context for Partial Access
-                {
-                    let mut ctx = self.partial_access.context.lock().unwrap();
-                    ctx.current_url = String::new();
-                    ctx.current_domain = String::new();
-                }
-
-                print!("URL: None ");
+                // Do NOT clear context here! 
+                // If a dialog is open, get_active_browser_url_optimized might return None
+                // but we need the current_url to stay set to the browser's URL 
+                // so the partial access check works.
+                
+                print!("URL: None (Preserving context) ");
             }
             let _ = std::io::stdout().flush();
 
             // Periodic configuration update (every 5 minutes)
             if last_config_update.elapsed() >= Duration::from_secs(60) {
+                println!("[{}] Checking for configuration updates...", Local::now().format("%H:%M:%S"));
+                
                 // Update Partial Access Config
                 self.partial_access.update_config(&self.api_client).await;
                 
                 // Update Blocked URLs
                 let blocked_urls = self.api_client.get_blocked_urls().await;
-                if !blocked_urls.is_empty() {
-                    self.browser_monitor.update_blacklist(blocked_urls);
-                    println!("[{}] Updated blocked URL list", Local::now().format("%H:%M:%S"));
-                }
+                // Always update, even if empty, so changes (like removals) are reflected
+                self.browser_monitor.update_blacklist(blocked_urls);
+                println!("[{}] Updated blocked URL list (Blacklist size: {})", 
+                    Local::now().format("%H:%M:%S"), 
+                    self.browser_monitor.api_blacklist.len());
                 
                 last_config_update = Instant::now();
             }
